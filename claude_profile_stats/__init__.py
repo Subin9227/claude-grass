@@ -1,0 +1,2 @@
+"""Claude Profile Stats package."""
+

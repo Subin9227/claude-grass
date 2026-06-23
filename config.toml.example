@@ -1,0 +1,14 @@
+[paths]
+claude_base = "C:/Users/82105/.claude"
+profile_repo = "C:/Users/82105/Desktop/YOUR_GITHUB_USERNAME"
+database = "./data/profile.db"
+output_dir = "./output"
+
+[profile]
+github_username = "YOUR_GITHUB_USERNAME"
+plan_monthly_price_usd = 20.0
+
+[grass]
+days = 180
+levels = [0, 250000, 1000000, 3000000]
+
