@@ -1,28 +1,47 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 
+
+# Per-million-token USD pricing. Current models carry no long-context premium
+# (Opus/Sonnet/Fable serve their 1M window at standard rates), so a single
+# input/output pair per model is enough. Source: Anthropic pricing, 2026-06.
 MODEL_PRICING: dict[str, dict[str, float]] = {
-    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "input_long": 6.0, "output_long": 22.5},
-    "claude-sonnet-4-20250514": {
-        "input": 3.0,
-        "output": 15.0,
-        "input_long": 6.0,
-        "output_long": 22.5,
-    },
-    "claude-opus-4-6": {"input": 5.0, "output": 25.0, "input_long": 10.0, "output_long": 37.5},
-    "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
+    "claude-fable-5": {"input": 10.0, "output": 50.0},
+    "claude-mythos-5": {"input": 10.0, "output": 50.0},
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-7": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-6": {"input": 5.0, "output": 25.0},
+    "claude-opus-4-5": {"input": 5.0, "output": 25.0},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "claude-sonnet-4-5": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    # Legacy / historical sessions that may still live in local rollups.
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
     "claude-3-7-sonnet-20250219": {"input": 3.0, "output": 15.0},
+    "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
     "claude-3-5-haiku-20241022": {"input": 0.8, "output": 4.0},
 }
 DEFAULT_PRICING_MODEL = "claude-sonnet-4-6"
+
+# Version-agnostic fallback so a newly released model (e.g. a future opus-4-9)
+# is still priced sensibly instead of silently defaulting to Sonnet.
+FAMILY_PRICING: dict[str, dict[str, float]] = {
+    "fable": {"input": 10.0, "output": 50.0},
+    "mythos": {"input": 10.0, "output": 50.0},
+    "opus": {"input": 5.0, "output": 25.0},
+    "sonnet": {"input": 3.0, "output": 15.0},
+    "haiku": {"input": 1.0, "output": 5.0},
+}
 CACHE_WRITE_MULTIPLIER = 1.25
 CACHE_READ_MULTIPLIER = 0.10
-LONG_CONTEXT_THRESHOLD = 200_000
 
 
 @dataclass
@@ -41,6 +60,7 @@ class SessionSummary:
     model_primary: str | None
     project_path: str | None
     git_identity: str | None
+    entrypoint: str | None
     active_hours: list[int]
     weekend: bool
 
@@ -55,13 +75,15 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 
 
 def _resolve_pricing(model: str | None) -> dict[str, float]:
+    if not model:
+        return MODEL_PRICING[DEFAULT_PRICING_MODEL]
     if model in MODEL_PRICING:
         return MODEL_PRICING[model]
-    model_lower = (model or "").lower()
-    for known, pricing in MODEL_PRICING.items():
-        family = known.split("-20")[0]
-        if family in model_lower:
+    lowered = model.lower()
+    for family, pricing in FAMILY_PRICING.items():
+        if family in lowered:
             return pricing
+    logger.warning("Unknown model %r; using %s pricing as fallback", model, DEFAULT_PRICING_MODEL)
     return MODEL_PRICING[DEFAULT_PRICING_MODEL]
 
 
@@ -73,10 +95,8 @@ def _calculate_cost(
     cache_read_tokens: int,
 ) -> float:
     pricing = _resolve_pricing(model)
-    total_context = input_tokens + cache_creation_tokens + cache_read_tokens
-    is_long = total_context > LONG_CONTEXT_THRESHOLD and "input_long" in pricing
-    input_price = pricing.get("input_long", pricing["input"]) if is_long else pricing["input"]
-    output_price = pricing.get("output_long", pricing["output"]) if is_long else pricing["output"]
+    input_price = pricing["input"]
+    output_price = pricing["output"]
     return round(
         (input_tokens / 1_000_000) * input_price
         + (cache_creation_tokens / 1_000_000) * input_price * CACHE_WRITE_MULTIPLIER
@@ -101,6 +121,11 @@ def _extract_message_payload(entry: dict) -> dict:
     return nested if isinstance(nested, dict) else entry
 
 
+def _is_real_model(model: str | None) -> bool:
+    """Exclude placeholder model ids such as ``<synthetic>`` from stats."""
+    return bool(model) and not model.startswith("<")
+
+
 def collect_sessions(claude_base: Path) -> list[SessionSummary]:
     projects_dir = claude_base / "projects"
     if not projects_dir.exists():
@@ -111,8 +136,6 @@ def collect_sessions(claude_base: Path) -> list[SessionSummary]:
         if not project_dir.is_dir():
             continue
         for jsonl_path in sorted(project_dir.glob("*.jsonl")):
-            if jsonl_path.name.startswith("agent-"):
-                continue
             summary = parse_session_file(jsonl_path)
             if summary is not None:
                 sessions.append(summary)
@@ -129,6 +152,7 @@ def parse_session_file(jsonl_path: Path) -> SessionSummary | None:
     model_primary: str | None = None
     project_path: str | None = None
     active_hours: set[int] = set()
+    entrypoints: Counter[str] = Counter()
 
     try:
         with jsonl_path.open("r", encoding="utf-8") as handle:
@@ -155,11 +179,17 @@ def parse_session_file(jsonl_path: Path) -> SessionSummary | None:
                     if isinstance(cwd, str) and cwd:
                         project_path = cwd
 
+                ep = entry.get("entrypoint")
+                if isinstance(ep, str) and ep:
+                    entrypoints[ep] += 1
+
                 if entry.get("type") != "assistant":
                     continue
 
                 if model_primary is None:
-                    model_primary = payload.get("model")
+                    candidate = payload.get("model")
+                    if _is_real_model(candidate):
+                        model_primary = candidate
 
                 usage = payload.get("usage")
                 if not isinstance(usage, dict):
@@ -185,6 +215,7 @@ def parse_session_file(jsonl_path: Path) -> SessionSummary | None:
         cache_read_tokens,
     )
     weekday = first_ts.astimezone().weekday()
+    entrypoint = entrypoints.most_common(1)[0][0] if entrypoints else None
     return SessionSummary(
         session_uuid=jsonl_path.stem,
         jsonl_path=jsonl_path,
@@ -200,6 +231,7 @@ def parse_session_file(jsonl_path: Path) -> SessionSummary | None:
         model_primary=model_primary,
         project_path=project_path,
         git_identity=_normalize_git_identity(project_path),
+        entrypoint=entrypoint,
         active_hours=sorted(active_hours),
         weekend=weekday >= 5,
     )

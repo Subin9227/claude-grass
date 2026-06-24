@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS sessions_ingested (
   model_primary TEXT,
   project_path TEXT,
   git_identity TEXT,
+  entrypoint TEXT,
   active_hours_json TEXT NOT NULL DEFAULT '[]',
   weekend INTEGER NOT NULL DEFAULT 0
 );
@@ -64,7 +65,16 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _ensure_columns(conn)
     return conn
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a DB was first created (lightweight migration)."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(sessions_ingested)")}
+    if "entrypoint" not in existing:
+        conn.execute("ALTER TABLE sessions_ingested ADD COLUMN entrypoint TEXT")
+        conn.commit()
 
 
 def upsert_sessions(conn: sqlite3.Connection, sessions: list[SessionSummary]) -> None:
@@ -81,8 +91,8 @@ def upsert_sessions(conn: sqlite3.Connection, sessions: list[SessionSummary]) ->
               session_uuid, jsonl_path, source_mtime, first_seen_at, last_seen_at,
               session_start_at, session_end_at, session_date, input_tokens, output_tokens,
               cache_creation_tokens, cache_read_tokens, estimated_cost_usd, model_primary,
-              project_path, git_identity, active_hours_json, weekend
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              project_path, git_identity, entrypoint, active_hours_json, weekend
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.session_uuid,
@@ -101,6 +111,7 @@ def upsert_sessions(conn: sqlite3.Connection, sessions: list[SessionSummary]) ->
                 session.model_primary,
                 session.project_path,
                 session.git_identity,
+                session.entrypoint,
                 json.dumps(session.active_hours),
                 1 if session.weekend else 0,
             ),
@@ -208,4 +219,22 @@ def replace_achievements(conn: sqlite3.Connection, achievements: list[dict]) -> 
 
 def load_achievements(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in conn.execute("SELECT * FROM achievements ORDER BY earned_at, code")]
+
+
+def load_surface_breakdown(conn: sqlite3.Connection) -> list[dict]:
+    """Token totals grouped by client surface (cli / vscode / desktop / ...)."""
+    rows = conn.execute(
+        """
+        SELECT
+          COALESCE(NULLIF(entrypoint, ''), 'unknown') AS entrypoint,
+          SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)
+            AS total_tokens,
+          SUM(estimated_cost_usd) AS estimated_cost_usd,
+          COUNT(*) AS session_count
+        FROM sessions_ingested
+        GROUP BY COALESCE(NULLIF(entrypoint, ''), 'unknown')
+        ORDER BY total_tokens DESC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
 

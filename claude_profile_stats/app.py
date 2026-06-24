@@ -6,7 +6,15 @@ import sys
 
 from .collector import collect_sessions
 from .config import AppConfig, load_config
-from .db import connect, load_achievements, load_daily_usage, rebuild_daily_usage, replace_achievements, upsert_sessions
+from .db import (
+    connect,
+    load_achievements,
+    load_daily_usage,
+    load_surface_breakdown,
+    rebuild_daily_usage,
+    replace_achievements,
+    upsert_sessions,
+)
 from .metrics import compute_achievements, monthly_summary
 from .publisher import publish_outputs, write_profile_readme
 from .renderers import render_badges, render_grass, render_money_card, write_summary_json
@@ -40,7 +48,14 @@ def run_render(config: AppConfig) -> None:
         config.grass.levels,
     )
     render_badges(achievements, config.paths.output_dir / "claude-badges.svg")
-    write_summary_json(rows, monthly, achievements, config.paths.output_dir / "profile-summary.json")
+    surfaces = load_surface_breakdown(conn)
+    write_summary_json(
+        rows,
+        monthly,
+        achievements,
+        config.paths.output_dir / "profile-summary.json",
+        surfaces,
+    )
     print(f"Rendered assets into {config.paths.output_dir}")
 
 
