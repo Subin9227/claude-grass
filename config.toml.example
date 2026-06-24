@@ -1,14 +1,27 @@
+# Copy this file to config.toml and edit the values for your machine.
+#   cp config.toml.example config.toml
+
 [paths]
-claude_base = "C:/Users/82105/.claude"
-profile_repo = "C:/Users/82105/Desktop/YOUR_GITHUB_USERNAME"
+# Your Claude folder.
+#   macOS / Linux: ~/.claude  (e.g. /Users/you/.claude or /home/you/.claude)
+#   Windows:       C:/Users/<you>/.claude
+claude_base = "/Users/you/.claude"
+
+# Local clone of your GitHub *profile* repo — the repo named like your username,
+# whose README shows on your GitHub profile page.
+profile_repo = "/Users/you/Desktop/your-username"
+
 database = "./data/profile.db"
 output_dir = "./output"
 
 [profile]
-github_username = "YOUR_GITHUB_USERNAME"
+github_username = "your-username"
+# Your plan's monthly price in USD, used for the "Money Copy" multiplier.
+# Claude Pro = 20. Adjust if you're on a different plan.
 plan_monthly_price_usd = 20.0
 
 [grass]
+# How many days the grass card covers.
 days = 180
+# Token thresholds for the 4 color intensities (0 = empty day).
 levels = [0, 250000, 1000000, 3000000]
-
