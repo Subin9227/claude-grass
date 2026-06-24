@@ -3,7 +3,7 @@ name = "claude-profile-stats"
 version = "0.1.0"
 description = "Local-first Claude usage tracker that renders GitHub-profile-ready SVG assets."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
