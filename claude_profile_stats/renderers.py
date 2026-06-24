@@ -4,7 +4,37 @@ from datetime import date, timedelta
 import json
 from pathlib import Path
 
-from .metrics import calculate_streak, monthly_summary, pick_peak_day, total_recent_tokens
+from .metrics import (
+    calculate_longest_streak,
+    calculate_streak,
+    monthly_summary,
+    pick_peak_day,
+    total_recent_tokens,
+)
+
+SURFACE_LABELS = {
+    "cli": "Claude Code (CLI)",
+    "claude-vscode": "Claude Code (VS Code)",
+    "claude-desktop": "Claude Desktop",
+    "unknown": "Unknown",
+}
+
+
+def _format_surfaces(surfaces: list[dict]) -> list[dict]:
+    total = sum(item["total_tokens"] for item in surfaces)
+    formatted = []
+    for item in surfaces:
+        formatted.append(
+            {
+                "entrypoint": item["entrypoint"],
+                "label": SURFACE_LABELS.get(item["entrypoint"], item["entrypoint"]),
+                "total_tokens": item["total_tokens"],
+                "estimated_cost_usd": round(item["estimated_cost_usd"], 2),
+                "session_count": item["session_count"],
+                "share": round(item["total_tokens"] / total, 4) if total else 0.0,
+            }
+        )
+    return formatted
 
 
 def _svg_text(x: int, y: int, text: str, size: int = 14, weight: int = 400, fill: str = "#e5e7eb") -> str:
@@ -107,9 +137,10 @@ def render_money_card(rows: list[dict], output_path: Path, plan_price: float) ->
             _svg_text(24, 170, f"Tokens {summary['total_tokens']:,}", 13, 500, "#cbd5e1"),
             _svg_text(200, 170, f"Peak Day {peak}", 13, 500, "#cbd5e1"),
             _svg_text(24, 194, f"Top Model {top_model}", 13, 500, "#cbd5e1"),
+            _svg_text(24, 214, "Claude Code usage · this machine", 10, 400, "#64748b"),
         ]
     )
-    output_path.write_text(_card(440, 220, body, "#111827"), encoding="utf-8")
+    output_path.write_text(_card(440, 232, body, "#111827"), encoding="utf-8")
     return summary
 
 
@@ -145,16 +176,20 @@ def write_summary_json(
     monthly: dict,
     achievements: list[dict],
     output_path: Path,
+    surfaces: list[dict] | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated_at": date.today().isoformat(),
+        "scope": "claude-code-local",
         "total_days": len(rows),
         "active_days": sum(1 for row in rows if row["total_tokens"] > 0),
         "streak_days": calculate_streak(rows),
+        "longest_streak_days": calculate_longest_streak(rows),
         "peak_day": pick_peak_day(rows),
         "recent_30d_tokens": total_recent_tokens(rows, 30),
         "monthly": monthly,
+        "surfaces": _format_surfaces(surfaces or []),
         "achievements": achievements,
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

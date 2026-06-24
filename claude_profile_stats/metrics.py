@@ -4,18 +4,43 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 
 
+def _active_dates(rows: list[dict]) -> set[date]:
+    return {date.fromisoformat(row["date"]) for row in rows if row["total_tokens"] > 0}
+
+
 def calculate_streak(rows: list[dict]) -> int:
-    if not rows:
-        return 0
-    dates = {date.fromisoformat(row["date"]) for row in rows if row["total_tokens"] > 0}
+    """Current run of consecutive active days ending today (or yesterday).
+
+    If the most recent activity is older than yesterday, the current streak is 0,
+    matching how GitHub-style contribution streaks behave.
+    """
+    dates = _active_dates(rows)
     if not dates:
         return 0
+    today = date.today()
+    if today in dates:
+        cursor = today
+    elif (today - timedelta(days=1)) in dates:
+        cursor = today - timedelta(days=1)
+    else:
+        return 0
     streak = 0
-    cursor = max(dates)
     while cursor in dates:
         streak += 1
         cursor -= timedelta(days=1)
     return streak
+
+
+def calculate_longest_streak(rows: list[dict]) -> int:
+    """Longest run of consecutive active days anywhere in the history."""
+    dates = sorted(_active_dates(rows))
+    if not dates:
+        return 0
+    longest = run = 1
+    for previous, current in zip(dates, dates[1:]):
+        run = run + 1 if current - previous == timedelta(days=1) else 1
+        longest = max(longest, run)
+    return longest
 
 
 def pick_peak_day(rows: list[dict]) -> str | None:
